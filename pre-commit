@@ -1,0 +1,54 @@
+#!/usr/bin/env python
+
+import os
+import subprocess
+import sys
+
+from diff_parser import find_differences_to_fix, find_files_with_differences
+from global_transformer_plugins import ImportOrganizerPlugin, TabulationFixer
+from line_transformer_plugins import TrailingSpaceCleaner
+
+def git_add(file):
+  subprocess.Popen("git add " + file, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).communicate()
+      
+def fix_lines(differences_per_file, line_transformer_plugins):
+  """
+  Inputs
+    differences_per_file dictionary of namedtuple("Difference", ["file", "line", "error"])
+    line_transformer_plugins list of plugins to apply to each difference found
+    global_transformer_plugins list of plugins to apply to each file with differences as a whole
+  """
+  # Apply fixes file by file
+  for file in differences_per_file:
+    diffs_ordered_by_line = sorted(differences_per_file[file], key=lambda diff: diff.line)
+    new_file_name = file + ".bak"
+    with open(new_file_name, "w") as new_file, open(file, "r") as reference_file:
+      lines = reference_file.readlines()
+      for diff in diffs_ordered_by_line:
+        for plugin in line_transformer_plugins:
+          lines[diff.line - 1] = plugin.process_line(lines[diff.line - 1])
+      for line in lines:
+        new_file.write(line.rstrip("\n") + "\n")
+    os.rename(new_file_name , file)
+    git_add(file)
+
+def fix_files(files, global_transformer_plugins):
+  for file in files:
+    file_to_update = file
+    new_file_name = file + ".bak"
+    for plugin in  global_transformer_plugins:
+      fixed_lines = plugin.process(file_to_update)
+      with open(new_file_name, "w") as new_file:
+        for line in fixed_lines:
+          new_file.write(line.rstrip("\n") + "\n")
+      file_to_update = new_file_name
+    os.rename(new_file_name , file)
+    git_add(file)
+ 
+p = subprocess.Popen("git diff --cached", shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+if not p.stdout.readlines():
+  print "Changes not staged for commit were found. The pre-commit hook will be skipped."
+  sys.exit(0)
+
+fix_lines(find_differences_to_fix(), [TrailingSpaceCleaner()])
+fix_files(find_files_with_differences(), [ImportOrganizerPlugin(), TabulationFixer()])
